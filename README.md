@@ -1,21 +1,20 @@
 Ansible Role: Oh My Zsh
 =======================
 
-[![Build Status](https://travis-ci.com/gantsign/ansible-role-oh-my-zsh.svg?branch=master)](https://travis-ci.com/gantsign/ansible-role-oh-my-zsh)
+[![Tests](https://github.com/gantsign/ansible-role-oh-my-zsh/workflows/Tests/badge.svg)](https://github.com/gantsign/ansible-role-oh-my-zsh/actions?query=workflow%3ATests)
 [![Ansible Galaxy](https://img.shields.io/badge/ansible--galaxy-gantsign.oh--my--zsh-blue.svg)](https://galaxy.ansible.com/gantsign/oh-my-zsh)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](https://raw.githubusercontent.com/gantsign/ansible-role-oh-my-zsh/master/LICENSE)
 
 Role to download, install and configure [Oh-My-Zsh](http://ohmyz.sh/).
 
-**Note:** you may be better off using the alternative
-[gantsign.ansible_role_antigen](https://galaxy.ansible.com/gantsign/antigen)
-role that can install third-party Zsh plugins as well as installing Oh My Zsh
-and its plugins.
+:thumbsdown: Deprecation Notice :thumbsdown:
+--------------------------------------------
+This role is no longer maintained.
 
 Requirements
 ------------
 
-* Ansible >= 2.8
+* Ansible >= 5 (Ansible Core >= 2.12)
 
 * Linux Distribution
 
@@ -23,29 +22,30 @@ Requirements
 
         * Debian
 
-            * Jessie (8)
             * Stretch (9)
+            * Buster (10)
+            * Bullseye (11)
 
         * Ubuntu
 
-            * Xenial (16.04)
             * Bionic (18.04)
+            * Focal (20.04)
 
     * RedHat Family
 
-        * CentOS
+        * Rocky Linux
 
-            * 7
+            * 8
 
         * Fedora
 
-            * 31
+            * 35
 
     * SUSE Family
 
         * openSUSE
 
-            * 15.1
+            * 15.3
 
     * Note: other versions are likely to work but have not been tested.
 
@@ -63,9 +63,25 @@ oh_my_zsh_theme: robbyrussell
 oh_my_zsh_plugins:
   - git
 
-# Wether to install by default for all specified users.
+# Whether to install by default for all specified users.
 # May be overridden by `oh_my_zsh: install:` under each user.
-oh_my_zsh_install: yes
+oh_my_zsh_install: true
+
+# Default update mode for Oh-My-Zsh
+# accepted values are:
+# disabled (default)
+# auto
+# reminder
+oh_my_zsh_update_mode: disabled
+
+# Default update frequency in days. When the update mode is set to a value other
+# than "disabled", this is the frequency (in days) to check for a new version.
+# The value 0 will check every time a new shell session starts.
+oh_my_zsh_update_frequency: 13
+
+# Whether to write the ~/.zshrc file
+# May be overridden by `oh_my_zsh: write_zshrc:` under each user.
+oh_my_zsh_write_zshrc: true
 
 # User configuration
 # Important: oh-my-zsh is installed per user so you need to specify the users to install it for.
@@ -75,15 +91,20 @@ users:
       theme: robbyrussell
       plugins:
         - git
+      update_mode: reminder
+      update_frequency: 3
+      write_zshrc: false
   - username: example2
     oh_my_zsh:
       theme: robbyrussell
       plugins:
         - git
         - mvn
+      update_mode: auto
+      update_frequency: 10
   - username: example3
     oh_my_zsh:
-      install: no
+      install: false
 ```
 
 Example Playbook
