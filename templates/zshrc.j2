@@ -110,3 +110,479 @@ source $ZSH/oh-my-zsh.sh
 # Example aliases
 # alias zshconfig="mate ~/.zshrc"
 # alias ohmyzsh="mate ~/.oh-my-zsh"
+
+
+# ==============================================================================
+# Docker Swarm Utility Functions for Zsh (Complete Version)
+# ==============================================================================
+
+# Lista todas as labels de todos os nodes de forma bonita
+swarm-labels() {
+    echo "🐳 Docker Swarm - Node Labels\n"
+    docker node ls -q | xargs -I {} docker node inspect {} --format '{{json .}}' | jq -r '
+    "╭─ 🖥️  " + .Description.Hostname + " [" + (.Spec.Role | ascii_upcase) + "]" + 
+    (if .Status.State == "ready" then " ✅" else " ❌" end) +
+    (if (.Spec.Labels // {} | length) > 0 then
+      "\n├─ 🏷️  Labels:" +
+      "\n" + ((.Spec.Labels // {}) | to_entries | map("│  • \(.key): \(.value)") | join("\n"))
+    else
+      "\n├─ 📝 No custom labels"
+    end) +
+    "\n╰─ " + ("─" * 50) + "\n"'
+}
+
+# Lista labels em formato JSON estruturado
+swarm-labels-json() {
+    echo "🐳 Docker Swarm - Node Labels (JSON Format)\n"
+    docker node ls -q | xargs -I {} docker node inspect {} --format '{{json .}}' | jq -s '
+    map({
+      "hostname": .Description.Hostname,
+      "role": .Spec.Role,
+      "status": .Status.State,
+      "availability": .Spec.Availability,
+      "labels": (.Spec.Labels // {}),
+      "address": .Status.Addr,
+      "engine_version": .Description.Engine.EngineVersion
+    }) | sort_by(.hostname)'
+}
+
+# Lista apenas labels que começam com 'node.'
+swarm-node-labels() {
+    echo "🐳 Docker Swarm - Node.* Labels Only\n"
+    docker node ls -q | xargs -I {} docker node inspect {} --format '{{json .}}' | jq -r '
+    .Description.Hostname as $hostname |
+    (.Spec.Labels // {}) | 
+    with_entries(select(.key | startswith("node."))) |
+    if length > 0 then
+      "🖥️  \($hostname):\n" + (to_entries | map("   \(.key): \(.value)") | join("\n")) + "\n"
+    else
+      "🖥️  \($hostname): (no node.* labels)\n"
+    end'
+}
+
+# Visão geral do cluster Swarm
+swarm-overview() {
+    echo "🐳 Docker Swarm Cluster Overview\n"
+    echo "📊 Nodes:"
+    docker node ls
+    echo "\n📋 Services:"
+    docker service ls
+    echo "\n📦 Stacks:"
+    docker stack ls 2>/dev/null || echo "   No stacks deployed"
+    echo "\n🔍 System Info:"
+    docker system df
+}
+
+# Lista todos os serviços com seus constraints
+swarm-services() {
+    echo "🐳 Docker Swarm - Services & Constraints\n"
+    docker service ls --format "table {{.ID}}\t{{.Name}}\t{{.Mode}}\t{{.Replicas}}\t{{.Image}}" | head -1
+    for service in $(docker service ls --format "{{.Name}}"); do
+        constraints=$(docker service inspect $service --format '{{range .Spec.TaskTemplate.Placement.Constraints}}{{.}} {{end}}' 2>/dev/null)
+        replicas=$(docker service inspect $service --format '{{.Spec.Replicas}}' 2>/dev/null)
+        mode=$(docker service inspect $service --format '{{.Spec.Mode}}' 2>/dev/null)
+        image=$(docker service inspect $service --format '{{.Spec.TaskTemplate.ContainerSpec.Image}}' 2>/dev/null | cut -d'@' -f1)
+        
+        printf "%-12s %-20s %-10s %-8s %s\n" \
+            "$(docker service ls --filter name=$service --format '{{.ID}}')" \
+            "$service" \
+            "$mode" \
+            "$replicas" \
+            "$image"
+        
+        if [ -n "$constraints" ]; then
+            echo "   🎯 Constraints: $constraints"
+        fi
+    done
+}
+
+# Mostra onde cada serviço está rodando
+swarm-placement() {
+    echo "🐳 Docker Swarm - Service Placement\n"
+    for service in $(docker service ls --format "{{.Name}}"); do
+        echo "📦 Service: $service"
+        docker service ps $service --format "table {{.Name}}\t{{.Node}}\t{{.CurrentState}}\t{{.DesiredState}}" | tail -n +2 | while read line; do
+            echo "   $line"
+        done
+        echo ""
+    done
+}
+
+# Adiciona labels a um node
+swarm-label-add() {
+    if [ $# -lt 3 ]; then
+        echo "Uso: swarm-label-add <node-name> <label-key> <label-value>"
+        echo "Exemplo: swarm-label-add worker01 node.type database"
+        return 1
+    fi
+    
+    local node=$1
+    local key=$2
+    local value=$3
+    
+    echo "🏷️  Adicionando label '$key=$value' ao node '$node'..."
+    docker node update --label-add $key=$value $node
+    
+    if [ $? -eq 0 ]; then
+        echo "✅ Label adicionada com sucesso!"
+        echo "🔍 Labels atuais do node '$node':"
+        docker node inspect $node --format '{{json .Spec.Labels}}' | jq -r 'to_entries | map("   \(.key): \(.value)") | join("\n")'
+    else
+        echo "❌ Erro ao adicionar label"
+    fi
+}
+
+# Remove labels de um node
+swarm-label-rm() {
+    if [ $# -lt 2 ]; then
+        echo "Uso: swarm-label-rm <node-name> <label-key1> [label-key2] ..."
+        echo "Exemplo: swarm-label-rm worker01 node.type node.dc"
+        return 1
+    fi
+    
+    local node=$1
+    shift
+    
+    echo "🗑️  Removendo labels do node '$node'..."
+    for label in "$@"; do
+        echo "   Removendo: $label"
+        docker node update --label-rm $label $node 2>/dev/null
+        if [ $? -eq 0 ]; then
+            echo "   ✅ $label removida"
+        else
+            echo "   ⚠️  $label não encontrada"
+        fi
+    done
+}
+
+# Remove TODAS as labels node.* de TODOS os nodes
+swarm-clean-node-labels() {
+    echo "⚠️  ATENÇÃO: Isso removerá TODAS as labels 'node.*' de TODOS os nodes!"
+    echo "Nodes afetados:"
+    docker node ls --format "   • {{.Hostname}} ({{.Status}})"
+    echo ""
+    
+    vared -p "Digite 'CONFIRMAR' para continuar: " confirm
+    
+    if [ "$confirm" = "CONFIRMAR" ]; then
+        echo "🗑️  Removendo todas as labels node.* ..."
+        docker node ls -q | while read node; do
+            hostname=$(docker node inspect $node --format '{{.Description.Hostname}}')
+            echo "   Limpando node: $hostname"
+            
+            # Lista todas as labels que começam com 'node.' e remove
+            docker node inspect $node --format '{{json .Spec.Labels}}' | jq -r 'keys[]' | grep '^node\.' | while read label; do
+                docker node update --label-rm $label $node >/dev/null 2>&1
+            done
+        done
+        echo "✅ Limpeza concluída!"
+    else
+        echo "❌ Operação cancelada."
+    fi
+}
+
+# Mostra logs de um serviço
+swarm-logs() {
+    if [ $# -lt 1 ]; then
+        echo "Uso: swarm-logs <service-name> [--follow]"
+        echo "Exemplo: swarm-logs nginx --follow"
+        return 1
+    fi
+    
+    local service=$1
+    local follow_flag=""
+    
+    if [ "$2" = "--follow" ] || [ "$2" = "-f" ]; then
+        follow_flag="--follow"
+    fi
+    
+    echo "📜 Logs do serviço: $service"
+    docker service logs $follow_flag $service
+}
+
+# Escala um serviço
+swarm-scale() {
+    if [ $# -ne 2 ]; then
+        echo "Uso: swarm-scale <service-name> <replicas>"
+        echo "Exemplo: swarm-scale nginx 3"
+        return 1
+    fi
+    
+    local service=$1
+    local replicas=$2
+    
+    echo "📈 Escalando serviço '$service' para $replicas réplicas..."
+    docker service scale $service=$replicas
+    
+    if [ $? -eq 0 ]; then
+        echo "✅ Serviço escalado com sucesso!"
+        echo "📊 Status atual:"
+        docker service ps $service --format "table {{.Name}}\t{{.Node}}\t{{.CurrentState}}"
+    fi
+}
+
+# Drena um node (coloca em maintenance)
+swarm-drain() {
+    if [ $# -ne 1 ]; then
+        echo "Uso: swarm-drain <node-name>"
+        echo "Exemplo: swarm-drain worker01"
+        return 1
+    fi
+    
+    local node=$1
+    
+    echo "🚫 Drenando node '$node' (colocando em maintenance)..."
+    echo "📦 Serviços atualmente rodando no node:"
+    docker node ps $node --format "   • {{.Name}} ({{.CurrentState}})"
+    echo ""
+    
+    vared -p "Continuar? (y/N): " confirm
+    
+    if [[ $confirm =~ ^[Yy]$ ]]; then
+        docker node update --availability drain $node
+        echo "✅ Node '$node' foi drenado. Monitorando realocação..."
+        sleep 3
+        docker node ps $node
+    else
+        echo "❌ Operação cancelada."
+    fi
+}
+
+# Reativa um node
+swarm-activate() {
+    if [ $# -ne 1 ]; then
+        echo "Uso: swarm-activate <node-name>"
+        echo "Exemplo: swarm-activate worker01"
+        return 1
+    fi
+    
+    local node=$1
+    
+    echo "✅ Reativando node '$node'..."
+    docker node update --availability active $node
+    
+    if [ $? -eq 0 ]; then
+        echo "✅ Node '$node' foi reativado!"
+        docker node ls --filter "name=$node"
+    fi
+}
+
+# Monitoramento em tempo real do cluster
+swarm-monitor() {
+    echo "🔄 Monitoramento em tempo real do Swarm (Ctrl+C para sair)"
+    echo "Atualizando a cada 5 segundos..."
+    echo ""
+    
+    while true; do
+        clear
+        echo "🐳 Docker Swarm - Monitor $(date '+%H:%M:%S')"
+        echo "============================================================"
+        
+        echo "\n📊 NODES:"
+        docker node ls
+        
+        echo "\n📋 SERVICES:"
+        docker service ls
+        
+        echo "\n🔍 TASKS:"
+        docker service ps $(docker service ls --format "{{.Name}}") --format "table {{.Name}}\t{{.Node}}\t{{.CurrentState}}\t{{.Error}}" 2>/dev/null | head -20
+        
+        sleep 5
+    done
+}
+
+# Backup das configurações do Swarm
+swarm-backup() {
+    local backup_dir="swarm-backup-$(date +%Y%m%d-%H%M%S)"
+    mkdir -p $backup_dir
+    
+    echo "💾 Criando backup do Swarm em: $backup_dir"
+    
+    # Nodes e labels
+    echo "📝 Exportando nodes e labels..."
+    docker node ls -q | xargs -I {} docker node inspect {} > $backup_dir/nodes.json
+    
+    # Services
+    echo "📝 Exportando services..."
+    docker service ls -q | xargs -I {} docker service inspect {} > $backup_dir/services.json
+    
+    # Networks
+    echo "📝 Exportando networks..."
+    docker network ls --filter driver=overlay -q | xargs -I {} docker network inspect {} > $backup_dir/networks.json
+    
+    # Secrets (apenas metadados)
+    echo "📝 Exportando secrets metadata..."
+    docker secret ls -q | xargs -I {} docker secret inspect {} > $backup_dir/secrets.json 2>/dev/null || echo "[]" > $backup_dir/secrets.json
+    
+    # Configs
+    echo "📝 Exportando configs..."
+    docker config ls -q | xargs -I {} docker config inspect {} > $backup_dir/configs.json 2>/dev/null || echo "[]" > $backup_dir/configs.json
+    
+    # Info do cluster
+    echo "📝 Exportando info do cluster..."
+    docker info > $backup_dir/cluster-info.txt
+    
+    echo "✅ Backup concluído em: $backup_dir"
+    echo "📁 Arquivos criados:"
+    ls -la $backup_dir/
+}
+
+# Deploy rápido de um serviço com constraints
+swarm-deploy() {
+    if [ $# -lt 2 ]; then
+        echo "Uso: swarm-deploy <service-name> <image> [constraint1] [constraint2] ..."
+        echo "Exemplo: swarm-deploy nginx nginx:latest 'node.labels.node.type==application'"
+        return 1
+    fi
+    
+    local service_name=$1
+    local image=$2
+    shift 2
+    
+    local constraints=""
+    for constraint in "$@"; do
+        constraints="$constraints --constraint '$constraint'"
+    done
+    
+    echo "🚀 Deploying service '$service_name' with image '$image'..."
+    if [ -n "$constraints" ]; then
+        echo "🎯 Constraints: $constraints"
+    fi
+    
+    eval "docker service create --name $service_name $constraints $image"
+    
+    if [ $? -eq 0 ]; then
+        echo "✅ Serviço '$service_name' deployado com sucesso!"
+        echo "📊 Status:"
+        docker service ps $service_name
+    else
+        echo "❌ Erro no deploy do serviço"
+    fi
+}
+
+# Força redistribuição de um serviço
+swarm-redeploy() {
+    if [ $# -ne 1 ]; then
+        echo "Uso: swarm-redeploy <service-name>"
+        echo "Exemplo: swarm-redeploy nginx"
+        return 1
+    fi
+    
+    local service=$1
+    
+    echo "🔄 Forçando redesploy do serviço '$service'..."
+    docker service update --force $service
+    
+    if [ $? -eq 0 ]; then
+        echo "✅ Redeploy iniciado com sucesso!"
+        echo "📊 Monitorando tasks..."
+        sleep 2
+        docker service ps $service
+    else
+        echo "❌ Erro no redeploy"
+    fi
+}
+
+# Lista de recursos do cluster por node
+swarm-resources() {
+    echo "🐳 Docker Swarm - Node Resources\n"
+    for node in $(docker node ls --format "{{.Hostname}}"); do
+        echo "🖥️  NODE: $node"
+        
+        # Usa docker node inspect para pegar informações de recursos
+        docker node inspect $node --format '
+        📊 CPU: {{.Description.Resources.NanoCPUs}} nano CPUs
+        💾 RAM: {{.Description.Resources.MemoryBytes}} bytes
+        🏷️  Platform: {{.Description.Platform.OS}}/{{.Description.Platform.Architecture}}
+        🐳 Engine: {{.Description.Engine.EngineVersion}}
+        📍 Address: {{.Status.Addr}}
+        ' 2>/dev/null
+        
+        echo "📦 Running tasks:"
+        docker node ps $node --format "   • {{.Name}} ({{.CurrentState}})" | head -5
+        echo ""
+    done
+}
+
+# Lista aliases das funções
+swarm-help() {
+    echo "🐳 Docker Swarm Functions - Help\n"
+    echo "📋 Available Commands:"
+    echo "   swarm-labels           - Lista labels de todos os nodes (visual)"
+    echo "   swarm-labels-json      - Lista labels em formato JSON"
+    echo "   swarm-node-labels      - Lista apenas labels 'node.*'"
+    echo "   swarm-overview         - Visão geral do cluster"
+    echo "   swarm-services         - Lista serviços com constraints"
+    echo "   swarm-placement        - Mostra onde cada serviço está rodando"
+    echo "   swarm-label-add        - Adiciona label a um node"
+    echo "   swarm-label-rm         - Remove labels de um node"
+    echo "   swarm-clean-node-labels- Remove TODAS as labels 'node.*'"
+    echo "   swarm-logs             - Mostra logs de um serviço"
+    echo "   swarm-scale            - Escala um serviço"
+    echo "   swarm-drain            - Drena um node (maintenance)"
+    echo "   swarm-activate         - Reativa um node"
+    echo "   swarm-monitor          - Monitor em tempo real"
+    echo "   swarm-backup           - Backup das configurações"
+    echo "   swarm-deploy           - Deploy rápido com constraints"
+    echo "   swarm-redeploy         - Força redeploy de um serviço"
+    echo "   swarm-resources        - Lista recursos de cada node"
+    echo "   swarm-help             - Mostra esta ajuda"
+    echo ""
+    echo "💡 Tip: Use 'swarm-' + TAB para autocompletar"
+}
+
+# Aliases úteis
+alias sw='swarm-overview'
+alias swl='swarm-labels'
+alias sws='swarm-services'
+alias swp='swarm-placement'
+alias swm='swarm-monitor'
+alias swr='swarm-resources'
+
+# Autocompletar para zsh
+_swarm_commands=(
+    'swarm-labels:Lista labels de todos os nodes (visual)'
+    'swarm-labels-json:Lista labels em formato JSON'
+    'swarm-node-labels:Lista apenas labels node.*'
+    'swarm-overview:Visão geral do cluster'
+    'swarm-services:Lista serviços com constraints'
+    'swarm-placement:Mostra onde cada serviço está rodando'
+    'swarm-label-add:Adiciona label a um node'
+    'swarm-label-rm:Remove labels de um node'
+    'swarm-clean-node-labels:Remove TODAS as labels node.*'
+    'swarm-logs:Mostra logs de um serviço'
+    'swarm-scale:Escala um serviço'
+    'swarm-drain:Drena um node (maintenance)'
+    'swarm-activate:Reativa um node'
+    'swarm-monitor:Monitor em tempo real'
+    'swarm-backup:Backup das configurações'
+    'swarm-deploy:Deploy rápido com constraints'
+    'swarm-redeploy:Força redeploy de um serviço'
+    'swarm-resources:Lista recursos de cada node'
+    'swarm-help:Mostra esta ajuda'
+)
+
+_swarm_completion() {
+    _describe 'swarm commands' _swarm_commands
+}
+
+# Registra o autocompletar para funções que começam com swarm-
+compdef _swarm_completion swarm-labels
+compdef _swarm_completion swarm-labels-json
+compdef _swarm_completion swarm-node-labels
+compdef _swarm_completion swarm-overview
+compdef _swarm_completion swarm-services
+compdef _swarm_completion swarm-placement
+compdef _swarm_completion swarm-label-add
+compdef _swarm_completion swarm-label-rm
+compdef _swarm_completion swarm-clean-node-labels
+compdef _swarm_completion swarm-logs
+compdef _swarm_completion swarm-scale
+compdef _swarm_completion swarm-drain
+compdef _swarm_completion swarm-activate
+compdef _swarm_completion swarm-monitor
+compdef _swarm_completion swarm-backup
+compdef _swarm_completion swarm-deploy
+compdef _swarm_completion swarm-redeploy
+compdef _swarm_completion swarm-resources
+compdef _swarm_completion swarm-help
